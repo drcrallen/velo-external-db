@@ -4,9 +4,11 @@ import DataProvider from './mysql_data_provider'
 import FilterParser from './sql_filter_transformer'
 import DatabaseOperations from './mysql_operations'
 import { MySqlConfig } from './types'
+import { ILogger } from '@wix-velo/external-db-logger'
+import IndexProvider from './mysql_index_provider'
 
 
-export default (cfg: MySqlConfig, _poolOptions: Record<string, unknown>)  => {
+export default (cfg: MySqlConfig, _poolOptions: Record<string, unknown>, logger?: ILogger)  => {
     const config: mysql.PoolConfig = {
         host: cfg.host,
         user: cfg.user,
@@ -29,8 +31,9 @@ export default (cfg: MySqlConfig, _poolOptions: Record<string, unknown>)  => {
     const databaseOperations = new DatabaseOperations(pool)
 
     const filterParser = new FilterParser()
-    const dataProvider = new DataProvider(pool, filterParser)
-    const schemaProvider = new SchemaProvider(pool)
+    const dataProvider = new DataProvider(pool, filterParser, logger)
+    const schemaProvider = new SchemaProvider(pool, logger)
+    const indexProvider = new IndexProvider(pool, logger)
 
-    return { dataProvider, schemaProvider, databaseOperations, connection: pool, cleanup: async() => await pool.end() }
+    return { dataProvider, schemaProvider, databaseOperations, indexProvider, connection: pool, cleanup: async() => await pool.end() }
 }

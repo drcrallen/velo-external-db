@@ -1,5 +1,5 @@
-import { AdapterAggregation as Aggregation, AdapterFilter as Filter, AnyFixMe, NotEmptyAdapterFilter as NotEmptyFilter, Sort, AdapterFunctions } from '@wix-velo/velo-external-db-types' 
-import { errors } from '@wix-velo/velo-external-db-commons'
+import { NonEmptyAdapterAggregation as Aggregation, AdapterFilter as Filter, AnyFixMe, NotEmptyAdapterFilter as NotEmptyFilter, Sort, AdapterFunctions } from '@wix-velo/velo-external-db-types' 
+import { errors, isDate } from '@wix-velo/velo-external-db-commons'
 import { EmptyFilter, EmptySort, isObject, AdapterOperators, extractProjectionFunctionsObjects, extractGroupByNames, isEmptyFilter, isNull, specArrayToRegex } from '@wix-velo/velo-external-db-commons'
 import { escapeIdentifier } from './postgres_utils'
 import { ParsedFilter } from './types'
@@ -55,13 +55,15 @@ export default class FilterParser {
 
         const havingFilter = this.parseFilter(aggregation.postFilter, offset, aliasToFunction)
 
-        const { filterExpr, parameters } = this.extractFilterExprAndParams(havingFilter)
+        const { filterExpr, parameters, offset: offsetAfterAggregation } = this.extractFilterExprAndParams(havingFilter, offset)
+
 
         return {
             fieldsStatement: filterColumnsStr.join(', '),
             groupByColumns,
             havingFilter: filterExpr,
-            parameters: parameters,
+            parameters,
+            offset: offsetAfterAggregation
         }
     }
 
@@ -77,10 +79,9 @@ export default class FilterParser {
         return { filterColumnsStr, aliasToFunction }
     }
 
-    extractFilterExprAndParams(havingFilter: any[]) {
-        return havingFilter.map(({ filterExpr, parameters }) => ({ filterExpr: filterExpr !== '' ? `HAVING ${filterExpr}` : '',
-                                                                     parameters: parameters }))
-                           .concat(EmptyFilter)[0]
+    extractFilterExprAndParams(havingFilter: any[], offset: number) {
+        return havingFilter.map(({ filterExpr, parameters, offset }) => ({ filterExpr: filterExpr !== '' ? `HAVING ${filterExpr}` : '', parameters, offset }))
+                           .concat({ ...EmptyFilter, offset: offset ?? 1 })[0]
     }
 
     parseFilter(filter: Filter, offset: number, inlineFields: { [key: string]: any }) : ParsedFilter[] {
@@ -100,7 +101,7 @@ export default class FilterParser {
                         filter: [ ...o.filter, ...res],
                         offset: res.length === 1 ? res[0].offset : o.offset
                     }
-                }, { filter: [], offset: offset })
+                }, { filter: [], offset })
 
                 const op = operator === and ? ' AND ' : ' OR '
                 return [{
@@ -117,6 +118,36 @@ export default class FilterParser {
                     offset: res2.length === 1 ? res2[0].offset : offset,
                     parameters: res2[0].parameters
                 }]
+        }
+
+        if (this.isNestedField(fieldName)) {
+            const [nestedFieldName, ...nestedFieldPath] = fieldName.split('.')
+            const params = this.valueForOperator(value, operator, offset)
+            return [{
+                filterExpr: `${escapeIdentifier(nestedFieldName)} ->> '${nestedFieldPath.join('.')}' ${this.adapterOperatorToMySqlOperator(operator, value)} ${params.sql}`.trim(),
+                parameters: !isNull(value) ? [].concat( this.patchTrueFalseValue(value) ) : [],
+                offset: params.offset,
+                filterColumns: [],
+            }]
+        }
+
+        if (operator === matches) {
+            const ignoreCase = value.ignoreCase ? 'LOWER' : ''
+            return [{
+                filterExpr: `${ignoreCase}(${escapeIdentifier(fieldName)}) ~ ${ignoreCase}($${offset})`,
+                filterColumns: [],
+                offset: offset + 1,
+                parameters: [specArrayToRegex(value.spec)]
+            }]
+        }
+
+        if (operator === eq && isObject(value) && !isDate(value)) {
+            return [{
+                filterExpr: `${escapeIdentifier(fieldName)}::jsonb @> $${offset}::jsonb`,
+                filterColumns: [],
+                offset: offset + 1,
+                parameters: [JSON.stringify(value)]
+            }]
         }
 
         if (this.isSingleFieldOperator(operator)) {
@@ -140,17 +171,11 @@ export default class FilterParser {
             }]
         }
 
-        if (operator === matches) {
-            const ignoreCase = value.ignoreCase ? 'LOWER' : ''
-            return [{
-                filterExpr: `${ignoreCase}(${escapeIdentifier(fieldName)}) ~ ${ignoreCase}($${offset})`,
-                filterColumns: [],
-                offset: offset + 1,
-                parameters: [specArrayToRegex(value.spec)]
-            }]
-        }
-
         return []
+    }
+
+    isNestedField(fieldName: string) {
+        return fieldName.includes('.')
     }
 
     valueForStringOperator(operator: string, value: any) {
@@ -192,7 +217,7 @@ export default class FilterParser {
         } else if ((operator === eq || operator === ne) && isNull(value)) {
             return {
                 sql: '',
-                offset: offset
+                offset
             }
         }
 

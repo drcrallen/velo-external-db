@@ -1,4 +1,4 @@
-import { AdapterAggregation as Aggregation, AdapterFilter as Filter, AnyFixMe, Item, ItemWithId, ResponseField } from '@wix-velo/velo-external-db-types'
+import { AdapterAggregation as Aggregation, AdapterFilter as Filter, AnyFixMe, Item, ItemWithId, ResponseField, Sort, NonEmptyAdapterAggregation } from '@wix-velo/velo-external-db-types'
 import QueryValidator from '../converters/query_validator'
 import DataService from './data'
 import CacheableSchemaInformation from './schema_information'
@@ -15,14 +15,14 @@ export default class SchemaAwareDataService {
         this.itemTransformer = itemTransformer
     }
 
-    async find(collectionName: string, filter: Filter, sort: any, skip: number, limit: number, _projection?: any, omitTotalCount?: boolean): Promise<{ items: ItemWithId[], totalCount: number | undefined}> {
+    async find(collectionName: string, filter: Filter, sort: any, skip: number, limit: number, _projection?: any, returnTotalCount?: boolean): Promise<{ items: ItemWithId[], totalCount?: number }> {
         const fields = await this.schemaInformation.schemaFieldsFor(collectionName)
         await this.validateFilter(collectionName, filter, fields)
         const projection = await this.projectionFor(collectionName, _projection)
         await this.validateProjection(collectionName, projection, fields)
 
-        const { items, totalCount } = await this.dataService.find(collectionName, filter, sort, skip, limit, projection, omitTotalCount)
-        return { items: this.itemTransformer.patchItems(items, fields), totalCount }
+        const { items, totalCount } = await this.dataService.find(collectionName, filter, sort, skip, limit, projection, returnTotalCount)
+        return { items: this.itemTransformer.patchItems(items, fields), totalCount }    
     }
 
     async getById(collectionName: string, itemId: string, _projection?: any) {
@@ -44,6 +44,12 @@ export default class SchemaAwareDataService {
         return await this.dataService.insert(collectionName, prepared[0], fields)
     }
     
+    async bulkUpsert(collectionName: string, items: Item[]) {
+        const fields = await this.schemaInformation.schemaFieldsFor(collectionName)
+        const prepared = await this.prepareItemsForInsert(fields, items)
+        return await this.dataService.bulkUpsert(collectionName, prepared, fields)
+    }
+
     async bulkInsert(collectionName: string, items: Item[]) {
         const fields = await this.schemaInformation.schemaFieldsFor(collectionName)
         const prepared = await this.prepareItemsForInsert(fields, items)
@@ -61,26 +67,33 @@ export default class SchemaAwareDataService {
     }
 
     async delete(collectionName: string, itemId: string) {
-        return await this.dataService.delete(collectionName, itemId)
+        const projection = await this.projectionFor(collectionName)
+        return await this.dataService.delete(collectionName, itemId, projection)
     }
 
     async bulkDelete(collectionName: string, itemIds: string[]) {
-        return await this.dataService.bulkDelete(collectionName, itemIds)
+        const projection = await this.projectionFor(collectionName)        
+        
+        return await this.dataService.bulkDelete(collectionName, itemIds, projection)
     }
 
     async truncate(collectionName: string) {
         return await this.dataService.truncate(collectionName)
     }
     
-    async aggregate(collectionName: string, filter: Filter, aggregation: Aggregation) {
+    async aggregate(collectionName: string, filter: Filter, _aggregation: Aggregation, sort: Sort[], skip: number, limit: number, returnTotalCount?: boolean) {
+        if (this.isEmptyAggregation(_aggregation)) {
+            return await this.find(collectionName, filter, sort, skip ?? 0, limit ?? 50, undefined, returnTotalCount)
+        }
+        const aggregation = _aggregation as NonEmptyAdapterAggregation
         await this.validateAggregation(collectionName, aggregation)
         await this.validateFilter(collectionName, filter)
-        return await this.dataService.aggregate(collectionName, filter, aggregation)
+        return await this.dataService.aggregate(collectionName, filter, aggregation, sort, skip, limit, returnTotalCount)
     }
 
     async validateFilter(collectionName: string, filter: Filter, _fields?: ResponseField[]) {
         const fields =  _fields ?? await this.schemaInformation.schemaFieldsFor(collectionName)
-        this.queryValidator.validateFilter(fields, filter)
+        this.queryValidator.validateFilter(fields, filter, collectionName)
     }
     
     async validateGetById(collectionName: string, itemId: string) {
@@ -88,7 +101,7 @@ export default class SchemaAwareDataService {
         await this.queryValidator.validateGetById(fields, itemId)
     }
 
-    async validateAggregation(collectionName: string, aggregation: Aggregation) {
+    async validateAggregation(collectionName: string, aggregation: NonEmptyAdapterAggregation) {
         const fields = await this.schemaInformation.schemaFieldsFor(collectionName)
         this.queryValidator.validateAggregation(fields, aggregation)
     }
@@ -113,10 +126,14 @@ export default class SchemaAwareDataService {
         return fields.map((f: { field: any }) => f.field)
     }
 
-    private async projectionFor(collectionName: string, _projection?: string[]) {
+    private async projectionFor(collectionName: string, _projection = [] as string[]) {
         const schemaFields = await this.schemaInformation.schemaFieldsFor(collectionName)
         const schemaContainsId = schemaFields.some(f => f.field === '_id')
-        const projection = _projection ?? schemaFields.map(f => f.field) 
+        const projection = ( Array.isArray(_projection) && _projection.length ) ? _projection as string[] : schemaFields.map(f => f.field)
         return schemaContainsId ? Array.from(new Set(['_id', ...projection])) : projection
+    }
+
+    private isEmptyAggregation(aggregation: Aggregation) {
+        return Object.keys(aggregation).length === 0
     }
 }

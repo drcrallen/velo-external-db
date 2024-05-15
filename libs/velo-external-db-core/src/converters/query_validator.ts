@@ -1,5 +1,5 @@
 import { errors } from '@wix-velo/velo-external-db-commons'
-import { AdapterAggregation, AdapterFilter, ResponseField } from '@wix-velo/velo-external-db-types'
+import { NonEmptyAdapterAggregation, AdapterFilter, ResponseField } from '@wix-velo/velo-external-db-types'
 import { extractFieldsAndOperators, queryAdapterOperatorsFor, isBlank } from './query_validator_utils'
 const { InvalidQuery } = errors
 
@@ -7,11 +7,11 @@ export default class QueryValidator {
     constructor() {
     }
 
-    validateFilter(fields: ResponseField[], filter: AdapterFilter ) {
+    validateFilter(fields: ResponseField[], filter: AdapterFilter, collectionName?: string) {
         const filterFieldsAndOpsObj = extractFieldsAndOperators(filter)
         const filterFields = filterFieldsAndOpsObj.map((f: { name: string }) => f.name)
         const fieldNames = fields.map((f: ResponseField) => f.field)
-        this.validateFieldsExists(fieldNames, filterFields)
+        this.validateFieldsExists(fieldNames, filterFields, collectionName)
         this.validateOperators(fields, filterFieldsAndOpsObj)
     }
     
@@ -21,7 +21,7 @@ export default class QueryValidator {
         this.validateFieldsExists(fieldNames, ['_id'])
     }
     
-    validateAggregation(fields: ResponseField[], aggregation: AdapterAggregation) {
+    validateAggregation(fields: ResponseField[], aggregation: NonEmptyAdapterAggregation) {
         const fieldsWithAliases = aggregation.projection.reduce((pV: any, cV: { name: string; alias?: any }) => {
             if (cV.name === '*') return pV
             if (cV.alias) return [...pV, { field: cV.alias, type: fields.find((f: ResponseField) => f.field === cV.name)?.type }]
@@ -33,11 +33,11 @@ export default class QueryValidator {
         this.validateFieldsExists(fieldNames, projectionFields)
     }
 
-    validateFieldsExists(allFields: string | any[], queryFields: any[]) { 
+    validateFieldsExists(allFields: string | any[], queryFields: any[], collectionName?: string) { 
         const nonExistentFields = queryFields.filter((field: any) => !allFields.includes(field)) 
 
         if (nonExistentFields.length) {
-            throw new InvalidQuery(`fields ${nonExistentFields.join(', ')} don't exist`)
+            throw new errors.FieldDoesNotExist(`fields [${nonExistentFields.join(', ')}] don't exist`, collectionName, nonExistentFields[0])
         }
     }
 

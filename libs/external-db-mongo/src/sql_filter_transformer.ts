@@ -1,6 +1,6 @@
 import { errors } from '@wix-velo/velo-external-db-commons'
 import { isObject, AdapterOperators, extractGroupByNames, extractProjectionFunctionsObjects, isEmptyFilter, specArrayToRegex } from '@wix-velo/velo-external-db-commons'
-import { AdapterAggregation as Aggregation, AdapterFilter as Filter, NotEmptyAdapterFilter as NotEmptyFilter, Sort, AdapterFunctions } from '@wix-velo/velo-external-db-types' 
+import { NonEmptyAdapterAggregation as Aggregation, AdapterFilter as Filter, NotEmptyAdapterFilter as NotEmptyFilter, Sort, AdapterFunctions } from '@wix-velo/velo-external-db-types' 
 import { EmptyFilter, EmptySort } from './mongo_utils'
 import { MongoFieldSort, MongoFilter, MongoSort } from './types'
 const { InvalidQuery } = errors
@@ -138,6 +138,15 @@ export default class FilterParser {
 
         return {
             sortExpr: { sort: results.map(result => result.expr) }
+        }
+    }
+
+    orderAggregationBy(sort: Sort[]) {
+        return {
+            $sort: sort.reduce((acc, s) => {
+                const direction = s.direction === 'asc'? 1 : -1 
+                return { ...acc, [s.fieldName]: direction }
+            }, {})
         }
     }
 

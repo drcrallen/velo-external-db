@@ -1,5 +1,5 @@
-import { errors } from '@wix-velo/velo-external-db-commons'
-import { AdapterFilter as Filter, AdapterAggregation as Aggregation, AdapterOperator, Sort, NotEmptyAdapterFilter as NotEmptyFilter, AdapterFunctions } from '@wix-velo/velo-external-db-types'
+import { errors, isDate } from '@wix-velo/velo-external-db-commons'
+import { AdapterFilter as Filter, NonEmptyAdapterAggregation as Aggregation, AdapterOperator, Sort, NotEmptyAdapterFilter as NotEmptyFilter, AdapterFunctions } from '@wix-velo/velo-external-db-types'
 import { EmptyFilter, EmptySort, isObject, AdapterOperators, extractGroupByNames, extractProjectionFunctionsObjects, isEmptyFilter, isNull, specArrayToRegex } from '@wix-velo/velo-external-db-commons'
 import { wildCardWith, escapeId } from './mysql_utils'
 import { MySqlParsedFilter, MySqlParsedAggregation } from './types'
@@ -53,21 +53,15 @@ export default class FilterParser implements IMySqlFilterParser {
                 }]
         }
 
-        if (this.isSingleFieldOperator(operator)) {
+        if (this.isNestedField(fieldName)) {
+            const [nestedFieldName, ...nestedFieldPath] = fieldName.split('.')
+            
             return [{
-                filterExpr: `${escapeId(fieldName)} ${this.adapterOperatorToMySqlOperator(operator, value)} ${this.valueForOperator(value, operator)}`.trim(),
+                filterExpr: `${escapeId(nestedFieldName)} ->> '$.${nestedFieldPath.join('.')}' ${this.adapterOperatorToMySqlOperator(operator, value)} ${this.valueForOperator(value, operator)}`.trim(),
                 parameters: !isNull(value) ? [].concat( this.patchTrueFalseValue(value) ) : []
-            }]
+            }]          
         }
-
-        if (this.isSingleFieldStringOperator(operator)) {
-            return [{
-                filterExpr: `${escapeId(fieldName)} LIKE ?`,
-                parameters: [this.valueForStringOperator(operator, value)]
-            }]
-        }
-
-
+        
         if (operator === urlized) {
             return [{
                 filterExpr: `LOWER(${escapeId(fieldName)}) RLIKE ?`,
@@ -81,8 +75,29 @@ export default class FilterParser implements IMySqlFilterParser {
                 filterExpr: `${ignoreCase}(${escapeId(fieldName)}) RLIKE ${ignoreCase}(?)`,
                 parameters: [specArrayToRegex(value.spec)]
             }]
-        }   
+        }
 
+        if (operator === eq && isObject(value) && !isDate(value)) {
+            return [{
+                filterExpr: `JSON_CONTAINS(${escapeId(fieldName)}, ?)`,
+                parameters: [JSON.stringify(value)]
+            }]
+        }
+
+        if (this.isSingleFieldOperator(operator)) {
+            return [{
+                filterExpr: `${escapeId(fieldName)} ${this.adapterOperatorToMySqlOperator(operator, value)} ${this.valueForOperator(value, operator)}`.trim(),
+                parameters: !isNull(value) ? [].concat( this.patchTrueFalseValue(value) ) : []
+            }]
+        }
+
+        if (this.isSingleFieldStringOperator(operator)) {
+            return [{
+                filterExpr: `${escapeId(fieldName)} LIKE ?`,
+                parameters: [this.valueForStringOperator(operator, value)]
+            }]
+        }
+        
         return []
     }
 
@@ -94,6 +109,10 @@ export default class FilterParser implements IMySqlFilterParser {
         return [string_contains, string_begins, string_ends].includes(operator)
     }
 
+    isNestedField(fieldName: string) {
+        return fieldName.includes('.')
+    }
+
     valueForOperator(value: string | any[], operator: any) {
         if (operator === include) {
             if (isNull(value) || value.length === 0) {
@@ -103,7 +122,6 @@ export default class FilterParser implements IMySqlFilterParser {
         } else if ((operator === eq || operator === ne) && isNull(value)) {
             return ''
         }
-
         return '?'
     }
 
@@ -200,7 +218,7 @@ export default class FilterParser implements IMySqlFilterParser {
             fieldsStatement: filterColumnsStr.join(', '),
             groupByColumns,
             havingFilter: filterExpr,
-            parameters: parameters,
+            parameters,
         }
     }
 
@@ -212,8 +230,7 @@ export default class FilterParser implements IMySqlFilterParser {
     }
 
     extractFilterExprAndParams(havingFilter: { filterExpr: any; parameters: any }[]) {
-        return havingFilter.map(({ filterExpr, parameters }) => ({ filterExpr: filterExpr !== '' ? `HAVING ${filterExpr}` : '',
-                                                                     parameters: parameters }))
+        return havingFilter.map(({ filterExpr, parameters }) => ({ filterExpr: filterExpr !== '' ? `HAVING ${filterExpr}` : '', parameters }))
                            .concat(EmptyFilter)[0]
     }
 
